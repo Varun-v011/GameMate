@@ -163,62 +163,18 @@ export default function Rummyscore({ onBack }) {
       gameId: `rummy_${Date.now()}`
     };
     
-    console.log('📤 SENDING TO FIRESTORE:', gameData);
+  try {
+    await addDoc(collection(db, 'rummyGames'), gameData);
+    console.log('✅ SAVED TO CLOUD!');
+  } catch (error) {
+    console.error('❌ FIRESTORE ERROR:', error.message);
+  }
 
-    try {
-      console.log('⏳ Attempting to write (30s timeout for slow networks)...');
-      
-      // 30 second timeout for slow networks
-      const docRef = await withTimeout(
-        addDoc(collection(db, 'rummyGames'), gameData),
-        30000
-      );
-      
-      const elapsed = Date.now() - startTime;
-      console.log(`✅ SUCCESS in ${elapsed}ms! Document ID:`, docRef.id);
-      
-      let message = `✅ Game saved successfully!\n\nDocument ID: ${docRef.id}\nTime: ${elapsed}ms`;
-      if (elapsed > 5000) {
-        message += '\n\n⚠️ Note: Save took longer than 5 seconds. Your network may be slow.';
-      }
-      alert(message);
-      
-    } catch (error) {
-      const elapsed = Date.now() - startTime;
-      console.error(`❌ FIRESTORE ERROR after ${elapsed}ms:`, error);
-      
-      let userMessage = '❌ Failed to save:\n\n';
-      
-      if (error.message.includes('timed out')) {
-        userMessage += `Request timed out after ${elapsed}ms.\n\n`;
-        userMessage += 'Possible causes:\n';
-        userMessage += '• Slow/unstable internet connection\n';
-        userMessage += '• Firewall blocking Firebase\n';
-        userMessage += '• Network throttling in DevTools\n';
-        userMessage += '• Browser extension blocking request\n\n';
-        userMessage += 'Try:\n';
-        userMessage += '1. Check your internet connection\n';
-        userMessage += '2. Try incognito/private mode\n';
-        userMessage += '3. Disable browser extensions\n';
-        userMessage += '4. Check Network tab in DevTools (F12)';
-      } else if (error.code === 'permission-denied') {
-        userMessage += 'Permission denied.\n\n';
-        userMessage += 'Check your Firestore security rules in Firebase Console.';
-      } else if (error.code === 'unavailable') {
-        userMessage += 'Firestore service unavailable.\n\n';
-        userMessage += 'Firebase servers may be down or unreachable.';
-      } else {
-        userMessage += error.message || 'Unknown error';
-      }
-      
-      alert(userMessage);
-      console.error('Full error:', error);
-      
-    } finally {
-      setSaving(false);
-      setShowRoundModal(false);
-    }
-  };
+  setSaving(false);
+  setShowRoundModal(false);  // 🔥 CLOSE MODAL (MISSING!)
+};
+
+   
 
   return (
     <div className="score-container">
@@ -320,65 +276,6 @@ export default function Rummyscore({ onBack }) {
         >
           EDIT SCORE
         </button>
-        <button 
-          className="bottom-btn secondary"
-          onClick={async () => {
-            console.log('🧪 NETWORK DIAGNOSTIC TEST...');
-            const startTime = Date.now();
-            
-            try {
-              const testData = { 
-                message: 'Network diagnostic test',
-                timestamp: Date.now()
-              };
-              
-              console.log('📤 Testing connection with 30s timeout...');
-              
-              const docRef = await withTimeout(
-                addDoc(collection(db, 'test'), testData),
-                30000
-              );
-              
-              const elapsed = Date.now() - startTime;
-              console.log(`✅ SUCCESS in ${elapsed}ms! Doc ID:`, docRef.id);
-              
-              let message = `✅ Firebase connection OK!\n\n`;
-              message += `Response time: ${elapsed}ms\n`;
-              message += `Document ID: ${docRef.id}\n\n`;
-              
-              if (elapsed < 500) {
-                message += '🚀 Excellent connection speed!';
-              } else if (elapsed < 2000) {
-                message += '✅ Good connection speed.';
-              } else if (elapsed < 5000) {
-                message += '⚠️ Slow connection (2-5s). Network may be congested.';
-              } else if (elapsed < 10000) {
-                message += '⚠️ Very slow connection (5-10s). Check your internet.';
-              } else {
-                message += '❌ Extremely slow (>10s). Major network issues.';
-              }
-              
-              alert(message);
-              
-            } catch (error) {
-              const elapsed = Date.now() - startTime;
-              console.error(`❌ TEST FAILED after ${elapsed}ms:`, error);
-              
-              let message = `❌ Connection test failed!\n\n`;
-              message += `Timeout after: ${elapsed}ms\n`;
-              message += `Error: ${error.message}\n\n`;
-              message += 'Check:\n';
-              message += '• Internet connection\n';
-              message += '• Network tab in DevTools (F12)\n';
-              message += '• Firewall/antivirus settings\n';
-              message += '• Browser extensions';
-              
-              alert(message);
-            }
-          }}
-        >
-          Test Network
-        </button>
       </div>
 
       {showRoundModal && (
@@ -451,4 +348,4 @@ export default function Rummyscore({ onBack }) {
       )}
     </div>
   );
-}
+  }
