@@ -342,5 +342,16 @@ input[type="number"] { width: 100%; padding: 1rem; border: none; border-radius: 
   display: block;
 }
 
+.live-indicator {
+  color: #ff4444;
+  font-size: 12px;
+  font-weight: bold;
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
 
 

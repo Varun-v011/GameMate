@@ -3,20 +3,10 @@ import "./styles.css";
 import { usePlayers } from "../Context/Player-context";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faAngleLeft } from "@fortawesome/free-solid-svg-icons";
-import { collection, addDoc } from "firebase/firestore"; 
+import { collection, addDoc, onSnapshot, query, orderBy, limit } from "firebase/firestore"; // 🔥 ADDED
 import { db } from "../firebase"; 
 
 const STORAGE_KEY = "rummy-rows-final";
-
-// Helper function with longer timeout for slow networks
-const withTimeout = (promise, timeoutMs = 30000) => { // 30 seconds instead of 10
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Operation timed out after ' + timeoutMs + 'ms')), timeoutMs)
-    )
-  ]);
-};
 
 export default function Rummyscore({ onBack }) {
   const { players } = usePlayers();
@@ -30,6 +20,7 @@ export default function Rummyscore({ onBack }) {
   const [roundScores, setRoundScores] = useState([]);
   const [showOptions, setShowOptions] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [liveSync, setLiveSync] = useState(false); // 🔥 NEW: Track live updates
 
   // Helper functions for score calculations
   const playerTotal = (playerIndex) => {
@@ -51,6 +42,51 @@ export default function Rummyscore({ onBack }) {
     return remaining >= 0 ? remaining : "OUT";
   };
 
+  // 🔥 NEW: LIVE MULTIPLAYER SYNC
+  useEffect(() => {
+    if (players.length === 0) return;
+    
+    console.log('🔴 LIVE SYNC: Listening for updates...');
+    
+    const q = query(
+      collection(db, 'rummyGames'), 
+      orderBy('timestamp', 'desc'),
+      limit(1)
+    );
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      if (snapshot.empty) return;
+      
+      const latestGame = snapshot.docs[0].data();
+      console.log('🔴 LIVE UPDATE:', latestGame.totalRounds, 'rounds');
+      
+      // Only sync if player names match
+      const playersMatch = latestGame.players.length === players.length &&
+        latestGame.players.every((name, i) => name === players[i].name);
+      
+      if (playersMatch) {
+        // Reconstruct rows from flat scores object
+        const cloudRows = [];
+        for (let r = 0; r < latestGame.totalRounds; r++) {
+          const row = [];
+          for (let p = 0; p < players.length; p++) {
+            row.push(latestGame.scores[`round${r}_player${p}`] || "");
+          }
+          cloudRows.push(row);
+        }
+        
+        setRows(cloudRows);
+        setMaxScore(latestGame.maxScore || null);
+        setLiveSync(true);
+        
+        setTimeout(() => setLiveSync(false), 2000); // Flash indicator
+      }
+    });
+    
+    return () => unsubscribe();
+  }, [players]);
+
+  // Load from localStorage (fallback)
   useEffect(() => {
     if (players.length > 0) {
       console.log("🔥 Rummy: Players loaded:", players.map(p => p.name));
@@ -121,7 +157,6 @@ export default function Rummyscore({ onBack }) {
     console.log('🔥 SUBMIT CLICKED!');
     
     setSaving(true);
-    const startTime = Date.now();
     
     let newRows = rows;
     if (mode === "add") {
@@ -134,7 +169,6 @@ export default function Rummyscore({ onBack }) {
       setRows(newRows);
     }
 
-    // Convert nested arrays to flat object structure (Firestore requirement)
     const scoresObject = {};
     newRows.forEach((row, roundIndex) => {
       row.forEach((score, playerIndex) => {
@@ -142,7 +176,6 @@ export default function Rummyscore({ onBack }) {
       });
     });
 
-    // Calculate totals for each player
     const playerTotals = {};
     players.forEach((player, index) => {
       const total = newRows.reduce((sum, row) => {
@@ -163,18 +196,16 @@ export default function Rummyscore({ onBack }) {
       gameId: `rummy_${Date.now()}`
     };
     
-  try {
-    await addDoc(collection(db, 'rummyGames'), gameData);
-    console.log('✅ SAVED TO CLOUD!');
-  } catch (error) {
-    console.error('❌ FIRESTORE ERROR:', error.message);
-  }
+    try {
+      await addDoc(collection(db, 'rummyGames'), gameData);
+      console.log('✅ SAVED TO CLOUD → ALL DEVICES UPDATE!');
+    } catch (error) {
+      console.error('❌ FIRESTORE ERROR:', error.message);
+    }
 
-  setSaving(false);
-  setShowRoundModal(false);  // 🔥 CLOSE MODAL (MISSING!)
-};
-
-   
+    setSaving(false);
+    setShowRoundModal(false);
+  };
 
   return (
     <div className="score-container">
@@ -183,6 +214,12 @@ export default function Rummyscore({ onBack }) {
           <FontAwesomeIcon icon={faAngleLeft} />
         </button>
         <h2>Rummy</h2>
+        
+        {/* 🔥 NEW: Live sync indicator */}
+        {liveSync && (
+          <span className="live-indicator">🔴 LIVE</span>
+        )}
+        
         <button
           className="set-max-btn"
           onClick={() => {
@@ -348,4 +385,4 @@ export default function Rummyscore({ onBack }) {
       )}
     </div>
   );
-  }
+}
