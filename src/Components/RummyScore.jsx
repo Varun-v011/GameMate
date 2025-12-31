@@ -3,10 +3,23 @@ import "./styles.css";
 import { usePlayers } from "../Context/Player-context";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faAngleLeft } from "@fortawesome/free-solid-svg-icons";
-import { collection, addDoc, onSnapshot, query, orderBy, limit } from "firebase/firestore"; // 🔥 ADDED
+import { collection, addDoc, onSnapshot, query, orderBy, limit, where } from "firebase/firestore";
 import { db } from "../firebase"; 
 
 const STORAGE_KEY = "rummy-rows-final";
+
+// 🔥 NEW: Generate 4-character room code (2 letters + 2 numbers)
+const generateRoomCode = () => {
+  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const numbers = '0123456789';
+  
+  const letter1 = letters[Math.floor(Math.random() * letters.length)];
+  const letter2 = letters[Math.floor(Math.random() * letters.length)];
+  const num1 = numbers[Math.floor(Math.random() * numbers.length)];
+  const num2 = numbers[Math.floor(Math.random() * numbers.length)];
+  
+  return `${letter1}${letter2}${num1}${num2}`;
+};
 
 export default function Rummyscore({ onBack }) {
   const { players } = usePlayers();
@@ -20,7 +33,41 @@ export default function Rummyscore({ onBack }) {
   const [roundScores, setRoundScores] = useState([]);
   const [showOptions, setShowOptions] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [liveSync, setLiveSync] = useState(false); // 🔥 NEW: Track live updates
+  const [liveSync, setLiveSync] = useState(false);
+  const [gameRoom, setGameRoom] = useState(null);
+  const [showRoomModal, setShowRoomModal] = useState(false);
+  const [roomInput, setRoomInput] = useState("");
+  const [justJoinedRoom, setJustJoinedRoom] = useState(false);
+  const [isViewer, setIsViewer] = useState(false);
+  const [viewerPlayers, setViewerPlayers] = useState([]);
+
+  // Initialize or load game room
+  useEffect(() => {
+    const storedRoom = localStorage.getItem('rummyGameRoom');
+    const joined = localStorage.getItem('justJoinedRoom');
+    const viewerMode = localStorage.getItem('viewerMode');
+    
+    if (viewerMode === 'true') {
+      setIsViewer(true);
+      console.log('👁️ Viewer mode active');
+    }
+    
+    if (joined === 'true') {
+      setJustJoinedRoom(true);
+      localStorage.removeItem('justJoinedRoom');
+      console.log('🔄 Just joined room - skipping localStorage');
+    }
+    
+    if (storedRoom) {
+      setGameRoom(storedRoom);
+      console.log('🎮 Room:', storedRoom, viewerMode === 'true' ? '(viewer)' : '(host)');
+    } else {
+      const newRoom = generateRoomCode(); // 🔥 CHANGED
+      localStorage.setItem('rummyGameRoom', newRoom);
+      setGameRoom(newRoom);
+      console.log('🎮 Created room:', newRoom);
+    }
+  }, []);
 
   // Helper functions for score calculations
   const playerTotal = (playerIndex) => {
@@ -42,91 +89,131 @@ export default function Rummyscore({ onBack }) {
     return remaining >= 0 ? remaining : "OUT";
   };
 
-  // 🔥 NEW: LIVE MULTIPLAYER SYNC
+  // LIVE SYNC for both host and viewer
   useEffect(() => {
-    if (players.length === 0) return;
+    if (!gameRoom) return;
     
-    console.log('🔴 LIVE SYNC: Listening for updates...');
+    if (!isViewer && players.length === 0) {
+      console.log('⏸️ Host waiting for players...');
+      return;
+    }
+    
+    console.log('🔴 LIVE SYNC:', isViewer ? 'Viewer mode' : 'Host mode', gameRoom);
     
     const q = query(
-      collection(db, 'rummyGames'), 
+      collection(db, 'rummyGames'),
+      where('gameId', '==', gameRoom),
       orderBy('timestamp', 'desc'),
       limit(1)
     );
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      if (snapshot.empty) return;
+      if (snapshot.empty) {
+        console.log('📭 No games in this room yet');
+        return;
+      }
       
       const latestGame = snapshot.docs[0].data();
-      console.log('🔴 LIVE UPDATE:', latestGame.totalRounds, 'rounds');
+      console.log('🔴 LIVE UPDATE:', latestGame.totalRounds, 'rounds', latestGame.players);
       
-      // Only sync if player names match
-      const playersMatch = latestGame.players.length === players.length &&
-        latestGame.players.every((name, i) => name === players[i].name);
-      
-      if (playersMatch) {
-        // Reconstruct rows from flat scores object
+      if (isViewer) {
         const cloudRows = [];
         for (let r = 0; r < latestGame.totalRounds; r++) {
           const row = [];
-          for (let p = 0; p < players.length; p++) {
+          for (let p = 0; p < latestGame.players.length; p++) {
             row.push(latestGame.scores[`round${r}_player${p}`] || "");
           }
           cloudRows.push(row);
         }
         
+        console.log('👁️ VIEWER LOADED:', cloudRows.length, 'rounds');
         setRows(cloudRows);
         setMaxScore(latestGame.maxScore || null);
+        setViewerPlayers(latestGame.players);
         setLiveSync(true);
         
-        setTimeout(() => setLiveSync(false), 2000); // Flash indicator
+        setTimeout(() => setLiveSync(false), 2000);
+      } else {
+        const playersMatch = latestGame.players.length === players.length &&
+          latestGame.players.every((name, i) => name === players[i].name);
+        
+        if (playersMatch) {
+          const cloudRows = [];
+          for (let r = 0; r < latestGame.totalRounds; r++) {
+            const row = [];
+            for (let p = 0; p < players.length; p++) {
+              row.push(latestGame.scores[`round${r}_player${p}`] || "");
+            }
+            cloudRows.push(row);
+          }
+          
+          console.log('🎮 HOST LOADED:', cloudRows.length, 'rounds');
+          setRows(cloudRows);
+          setMaxScore(latestGame.maxScore || null);
+          setLiveSync(true);
+          
+          setTimeout(() => setLiveSync(false), 2000);
+        } else {
+          console.log('⚠️ Player mismatch - not syncing');
+        }
       }
     });
     
     return () => unsubscribe();
-  }, [players]);
+  }, [gameRoom, players, isViewer]);
 
-  // Load from localStorage (fallback)
+  // Load from localStorage (only for host, not viewer)
   useEffect(() => {
-    if (players.length > 0) {
-      console.log("🔥 Rummy: Players loaded:", players.map(p => p.name));
-      
-      const savedRows = localStorage.getItem(`${STORAGE_KEY}-rows`);
-      if (savedRows) {
-        try {
-          const parsedRows = JSON.parse(savedRows);
-          const fixedRows = parsedRows.map(row => 
-            Array(players.length).fill("").map((_, i) => row[i] || "")
-          );
-          setRows(fixedRows);
-          console.log("✅ LOADED ROWS:", fixedRows.length);
-        } catch (e) {
-          console.log("❌ Rows parse error:", e);
-        }
-      }
-
-      const savedMax = localStorage.getItem(`${STORAGE_KEY}-max`);
-      if (savedMax) {
-        setMaxScore(parseInt(savedMax) || null);
-      }
+    if (isViewer || players.length === 0 || justJoinedRoom) {
+      console.log("⏭️ Skipping localStorage");
+      return;
     }
-  }, [players]);
+    
+    console.log("🔥 Rummy: Players loaded:", players.map(p => p.name));
+    
+    const timer = setTimeout(() => {
+      if (rows.length === 0) {
+        const savedRows = localStorage.getItem(`${STORAGE_KEY}-rows`);
+        if (savedRows) {
+          try {
+            const parsedRows = JSON.parse(savedRows);
+            const fixedRows = parsedRows.map(row => 
+              Array(players.length).fill("").map((_, i) => row[i] || "")
+            );
+            setRows(fixedRows);
+            console.log("✅ LOADED FROM LOCALSTORAGE (fallback):", fixedRows.length);
+          } catch (e) {
+            console.log("❌ Rows parse error:", e);
+          }
+        }
+
+        const savedMax = localStorage.getItem(`${STORAGE_KEY}-max`);
+        if (savedMax) {
+          setMaxScore(parseInt(savedMax) || null);
+        }
+      } else {
+        console.log("✅ Cloud data loaded, skipping localStorage");
+      }
+    }, 2000);
+    
+    return () => clearTimeout(timer);
+  }, [players, justJoinedRoom, rows.length, isViewer]);
 
   useEffect(() => {
-    if (players.length > 0 && rows.length > 0) {
+    if (!isViewer && players.length > 0 && rows.length > 0) {
       localStorage.setItem(`${STORAGE_KEY}-rows`, JSON.stringify(rows));
       console.log("💾 SAVED ROWS:", rows.length);
     }
-  }, [rows, players.length]);
+  }, [rows, players.length, isViewer]);
 
   useEffect(() => {
-    if (players.length > 0 && maxScore !== null) {
+    if (!isViewer && players.length > 0 && maxScore !== null) {
       localStorage.setItem(`${STORAGE_KEY}-max`, maxScore.toString());
     }
-  }, [maxScore, players.length]);
+  }, [maxScore, players.length, isViewer]);
 
   const handleCellClick = (rIndex, cIndex) => {
-    if (!isEditing) return;
+    if (!isEditing || isViewer) return;
     setEditingCell({ row: rIndex, col: cIndex });
     setCellValue(rows[rIndex][cIndex] ?? "");
   };
@@ -151,6 +238,56 @@ export default function Rummyscore({ onBack }) {
     const next = [...roundScores];
     next[index] = value;
     setRoundScores(next);
+  };
+
+  const joinRoom = () => {
+    if (!roomInput.trim()) {
+      alert('Please enter a room code');
+      return;
+    }
+    const roomCode = roomInput.trim().toUpperCase();
+    
+    localStorage.removeItem(`${STORAGE_KEY}-rows`);
+    localStorage.removeItem(`${STORAGE_KEY}-max`);
+    
+    localStorage.setItem('rummyGameRoom', roomCode);
+    localStorage.setItem('viewerMode', 'true');
+    localStorage.setItem('justJoinedRoom', 'true');
+    
+    setGameRoom(roomCode);
+    setIsViewer(true);
+    setShowRoomModal(false);
+    setRoomInput("");
+    
+    console.log('👁️ Joining as VIEWER:', roomCode);
+    alert(`Viewing room: ${roomCode}\n\nYou're in VIEWER mode (read-only)\nScores will update automatically!`);
+    
+    window.location.reload();
+  };
+
+  const createNewRoom = () => {
+    localStorage.removeItem(`${STORAGE_KEY}-rows`);
+    localStorage.removeItem(`${STORAGE_KEY}-max`);
+    localStorage.removeItem('viewerMode');
+    
+    const newRoom = generateRoomCode(); // 🔥 CHANGED
+    localStorage.setItem('rummyGameRoom', newRoom);
+    localStorage.setItem('justJoinedRoom', 'true');
+    
+    setGameRoom(newRoom);
+    setIsViewer(false);
+    setShowRoomModal(false);
+    
+    console.log('🎮 Created new room:', newRoom);
+    window.location.reload();
+  };
+
+  const exitViewerMode = () => {
+    localStorage.removeItem('viewerMode');
+    localStorage.removeItem('rummyGameRoom');
+    setIsViewer(false);
+    alert('Exited viewer mode!\nCreate your own game or join as host.');
+    window.location.reload();
   };
 
   const submitRound = async () => {
@@ -193,12 +330,12 @@ export default function Rummyscore({ onBack }) {
       playerTotals: playerTotals,
       createdAt: new Date().toISOString(),
       timestamp: Date.now(),
-      gameId: `rummy_${Date.now()}`
+      gameId: gameRoom
     };
     
     try {
       await addDoc(collection(db, 'rummyGames'), gameData);
-      console.log('✅ SAVED TO CLOUD → ALL DEVICES UPDATE!');
+      console.log('✅ SAVED TO ROOM:', gameRoom);
     } catch (error) {
       console.error('❌ FIRESTORE ERROR:', error.message);
     }
@@ -207,47 +344,80 @@ export default function Rummyscore({ onBack }) {
     setShowRoundModal(false);
   };
 
+  const displayPlayers = isViewer ? viewerPlayers.map((name, i) => ({ name, id: i })) : players;
+
   return (
     <div className="score-container">
       <div className="score-header">
         <button className="back-chip" onClick={onBack}>
           <FontAwesomeIcon icon={faAngleLeft} />
         </button>
-        <h2>Rummy</h2>
+        <h2>Rummy {isViewer && '👁️'}</h2>
         
-        {/* 🔥 NEW: Live sync indicator */}
         {liveSync && (
           <span className="live-indicator">🔴 LIVE</span>
         )}
         
         <button
-          className="set-max-btn"
-          onClick={() => {
-            const value = window.prompt("Set total / max score for this game:");
-            if (!value) return;
-            const n = Number(value);
-            if (!isNaN(n) && n > 0) {
-              setMaxScore(n);
-            } else {
-              alert("Please enter a valid positive number");
-            }
-          }}
+          className="room-btn"
+          onClick={() => setShowRoomModal(true)}
+          title="Multiplayer Room"
         >
-          {maxScore ? `Max: ${maxScore}` : "Set Max"}
+          🎮
         </button>
+        
+        {!isViewer && (
+          <button
+            className="set-max-btn"
+            onClick={() => {
+              const value = window.prompt("Set total / max score for this game:");
+              if (!value) return;
+              const n = Number(value);
+              if (!isNaN(n) && n > 0) {
+                setMaxScore(n);
+              } else {
+                alert("Please enter a valid positive number");
+              }
+            }}
+          >
+            {maxScore ? `Max: ${maxScore}` : "Set Max"}
+          </button>
+        )}
       </div>
 
       <div className="date-bar">
         <span>{new Date().toLocaleDateString()}</span>
+        {isViewer && (
+          <span style={{color: '#4CAF50', fontSize: '12px', fontWeight: 'bold', marginLeft: '8px'}}>
+            VIEWER MODE
+          </span>
+        )}
+        <span 
+          className="room-code"
+          onClick={() => {
+            navigator.clipboard?.writeText(gameRoom);
+            alert(`Room code copied: ${gameRoom}\nShare with other players!`);
+          }}
+          style={{cursor: 'pointer', fontSize: '13px', color: '#666', fontWeight: 'bold'}}
+        >
+          Room: {gameRoom} 📋  {/* 🔥 REMOVED .slice(-6) */}
+        </span>
       </div>
+
+      {isViewer && rows.length === 0 && (
+        <div style={{textAlign: 'center', padding: '40px', color: '#999'}}>
+          <p>🔴 Waiting for host to start game...</p>
+          <p style={{fontSize: '12px', marginTop: '8px'}}>Room: {gameRoom}</p>
+        </div>
+      )}
 
       <div className="score-table-container tall">
         <table className="score-table compact">
           <thead>
             <tr>
-              {players.map((p, i) => (
+              {displayPlayers.map((p, i) => (
                 <th
-                  key={p.id}
+                  key={p.id || i}
                   className={`player-header ${isPlayerOut(i) ? "out-player" : ""}`}
                 >
                   {p.name || `Player ${i + 1}`}
@@ -282,40 +452,44 @@ export default function Rummyscore({ onBack }) {
                 ))}
               </tr>
             ))}
-            <tr className="remaining-row">
-              {players.map((_, index) => (
-                <td
-                  key={index}
-                  className={`remaining-cell ${isPlayerOut(index) ? "out" : ""}`}
-                >
-                  {remainingForPlayer(index)}
-                </td>
-              ))}
-            </tr>
+            {displayPlayers.length > 0 && (
+              <tr className="remaining-row">
+                {displayPlayers.map((_, index) => (
+                  <td
+                    key={index}
+                    className={`remaining-cell ${isPlayerOut(index) ? "out" : ""}`}
+                  >
+                    {remainingForPlayer(index)}
+                  </td>
+                ))}
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
 
-      <div className="bottom-buttons">
-        <button className="bottom-btn primary" onClick={openRoundModal}>
-          ENTER SCORE
-        </button>
-        <button
-          className="bottom-btn secondary"
-          onClick={() => {
-            setMode("edit");
-            const lastRow = rows[rows.length - 1] || [];
-            setRoundScores(
-              players.map((_, i) => String(lastRow[i] ?? ""))
-            );
-            setShowRoundModal(true);
-          }}
-        >
-          EDIT SCORE
-        </button>
-      </div>
+      {!isViewer && (
+        <div className="bottom-buttons">
+          <button className="bottom-btn primary" onClick={openRoundModal}>
+            ENTER SCORE
+          </button>
+          <button
+            className="bottom-btn secondary"
+            onClick={() => {
+              setMode("edit");
+              const lastRow = rows[rows.length - 1] || [];
+              setRoundScores(
+                players.map((_, i) => String(lastRow[i] ?? ""))
+              );
+              setShowRoundModal(true);
+            }}
+          >
+            EDIT SCORE
+          </button>
+        </div>
+      )}
 
-      {showRoundModal && (
+      {showRoundModal && !isViewer && (
         <div className="round-modal-backdrop">
           <div className="round-modal">
             <div className="round-modal-header">
@@ -380,6 +554,80 @@ export default function Rummyscore({ onBack }) {
             >
               {saving ? 'SAVING...' : 'SUBMIT'}
             </button>
+          </div>
+        </div>
+      )}
+
+      {showRoomModal && (
+        <div className="round-modal-backdrop">
+          <div className="round-modal room-modal">
+            <div className="round-modal-header">
+              <button className="back-btn" onClick={() => setShowRoomModal(false)}>
+                ←
+              </button>
+              <h3>Multiplayer Room</h3>
+            </div>
+            
+            <div className="room-modal-body">
+              <div className="current-room">
+                <p style={{fontSize: '14px', color: '#666', marginBottom: '10px'}}>
+                  Current Room:
+                </p>
+                <div 
+                  className="room-code-display"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(gameRoom);
+                    alert(`Copied: ${gameRoom}\nShare with other players!`);
+                  }}
+                >
+                  {gameRoom}
+                  <span style={{marginLeft: '8px'}}>📋</span>
+                </div>
+                <p style={{fontSize: '12px', color: '#999', marginTop: '8px'}}>
+                  Tap to copy & share with players
+                </p>
+              </div>
+
+              <div className="room-divider">OR</div>
+
+              <div className="join-room">
+                <input
+                  className="room-input"
+                  placeholder="Enter room code to VIEW"
+                  value={roomInput}
+                  onChange={(e) => setRoomInput(e.target.value.toUpperCase())}
+                  onKeyDown={(e) => e.key === 'Enter' && joinRoom()}
+                />
+                <button 
+                  className="submit-btn-modal"
+                  onClick={joinRoom}
+                >
+                  JOIN AS VIEWER
+                </button>
+              </div>
+
+              <div className="room-divider">OR</div>
+
+              <button 
+                className="submit-btn-modal secondary-btn"
+                onClick={createNewRoom}
+              >
+                CREATE NEW ROOM
+              </button>
+
+              {isViewer && (
+                <>
+                  <div className="room-divider">Current Mode</div>
+                  <button 
+                    className="submit-btn-modal"
+                    onClick={exitViewerMode}
+                    style={{background: '#ff5252'}}
+                  >
+                    EXIT VIEWER MODE
+                  </button>
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}
